@@ -279,8 +279,10 @@ fn main() -> Result<()> {
             
             if !found1 || !found2 {
                 eprintln!("error: snapshot hashes not found");
-                eprintln!("       '{}' {}", if !found1 { "!" } else { " " }, args[2]);
-                eprintln!("       '{}' {}", if !found2 { "!" } else { " " }, args[3]);
+                let mark1 = if !found1 { "!" } else { " " };
+                let mark2 = if !found2 { "!" } else { " " };
+                eprintln!("       '{}' {}", mark1, args[2]);
+                eprintln!("       '{}' {}", mark2, args[3]);
                 std::process::exit(1);
             }
             
