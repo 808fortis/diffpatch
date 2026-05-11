@@ -195,20 +195,86 @@ fn list_saves() -> Result<()> {
 fn print_usage() {
     eprintln!("diffpatch - dynamic snapshot & patch tool");
     eprintln!();
-    eprintln!("usage: diffpatch {{command}} [arguments]");
+    eprintln!("usage: diffpatch <command> [arguments]");
+    eprintln!("       diffpatch <hash1> <hash2> [-o <file>]");
     eprintln!();
     eprintln!("commands:");
-    eprintln!("  add <path>              create snapshot of file/directory");
-    eprintln!("  save <name>             save current state as <name>");
-    eprintln!("  list                    list all saved snapshots");
-    eprintln!("  generate <hash1> <hash2> generate unified diff");
-    eprintln!("  help                    show this help");
+    eprintln!("  add <path> [--skip-save]   snapshot a file/dir (saves if --skip-save absent)");
+    eprintln!("  save <name>                save current state as <name>");
+    eprintln!("  list                       list all snapshots");
+    eprintln!("  help                       show this help");
     eprintln!();
     eprintln!("examples:");
-    eprintln!("  diffpatch add ./src");
+    eprintln!("  diffpatch add ./src                # saves snapshot with hash as name");
+    eprintln!("  diffpatch add ./src --skip-save    # only show hash, no save");
     eprintln!("  diffpatch save v1.0");
     eprintln!("  diffpatch list");
-    eprintln!("  diffpatch generate a1b2c3d4 e5f6g7h8 > changes.patch");
+    eprintln!("  diffpatch a1b2c3d4 e5f6g7h8 > out.patch");
+    eprintln!("  diffpatch a1b2c3d4 e5f6g7h8 -o out.patch");
+}
+
+fn is_valid_hash(hash: &str, master_path: &Path) -> Result<bool> {
+    if !master_path.exists() {
+        return Ok(false);
+    }
+    for line in BufReader::new(fs::File::open(master_path)?).lines() {
+        let line = line?;
+        if let Some((_, h)) = line.split_once(':') {
+            if h == hash {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn load_snapshot_by_hash(hash: &str, master_path: &Path) -> Result<Option<Index>> {
+    for line in BufReader::new(fs::File::open(master_path)?).lines() {
+        let line = line?;
+        if let Some((name, h)) = line.split_once(':') {
+            if h == hash {
+                return Ok(Some(Index::load(name, hash)?));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn run_generate(hash1: &str, hash2: &str, out_file: Option<&str>) -> Result<()> {
+    let start = Instant::now();
+    let master_path = Path::new(".diffpatch/master");
+    if !master_path.exists() {
+        eprintln!("error: no snapshots found");
+        std::process::exit(1);
+    }
+    
+    let snap1 = match load_snapshot_by_hash(hash1, master_path)? {
+        Some(s) => s,
+        None => {
+            eprintln!("error: hash '{}' not found", hash1);
+            std::process::exit(1);
+        }
+    };
+    let snap2 = match load_snapshot_by_hash(hash2, master_path)? {
+        Some(s) => s,
+        None => {
+            eprintln!("error: hash '{}' not found", hash2);
+            std::process::exit(1);
+        }
+    };
+    
+    let patch = snap1.diff(&snap2);
+    match out_file {
+        Some(filename) => {
+            fs::write(filename, patch)?;
+            eprintln!("ok: diff written to {}", filename);
+        }
+        None => {
+            print!("{}", patch);
+        }
+    }
+    eprintln!("    time: {:.2}ms", start.elapsed().as_secs_f64() * 1000.0);
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -222,15 +288,37 @@ fn main() -> Result<()> {
         "add" => {
             if args.len() < 3 {
                 eprintln!("error: missing path");
-                eprintln!("usage: diffpatch add <path>");
+                eprintln!("usage: diffpatch add <path> [--skip-save]");
                 std::process::exit(1);
             }
+            let mut skip_save = false;
+            let mut path = None;
+            let mut i = 2;
+            while i < args.len() {
+                if args[i] == "--skip-save" {
+                    skip_save = true;
+                } else if path.is_none() {
+                    path = Some(&args[i]);
+                } else {
+                    eprintln!("error: unexpected argument '{}'", args[i]);
+                    std::process::exit(1);
+                }
+                i += 1;
+            }
+            let path = path.expect("path missing");
             let start = Instant::now();
             let mut idx = Index::new();
-            idx.add_path(Path::new(&args[2]))?;
+            idx.add_path(Path::new(path))?;
             let hash = idx.compute_root_hash();
-            eprintln!("ok: snapshot created");
-            eprintln!("    hash: {}", hash);
+            
+            if skip_save {
+                eprintln!("ok: snapshot created (not saved)");
+                eprintln!("    hash: {}", hash);
+            } else {
+                idx.save(&hash)?;
+                eprintln!("ok: snapshot saved as '{}'", hash);
+                eprintln!("    hash: {}", hash);
+            }
             eprintln!("    time: {:.2}ms", start.elapsed().as_secs_f64() * 1000.0);
         }
         "save" => {
@@ -250,53 +338,33 @@ fn main() -> Result<()> {
         "list" => {
             list_saves()?;
         }
-        "generate" => {
-            if args.len() < 4 {
-                eprintln!("error: missing hashes");
-                eprintln!("usage: diffpatch generate <hash1> <hash2>");
-                std::process::exit(1);
-            }
-            let start = Instant::now();
-            if !Path::new(".diffpatch/master").exists() {
-                eprintln!("error: no snapshots found");
-                std::process::exit(1);
-            }
-            let master = fs::read_to_string(".diffpatch/master")?;
-            let mut snaps = Vec::new();
-            let mut found1 = false;
-            let mut found2 = false;
-            
-            for line in master.lines() {
-                let (name, hash) = line.split_once(':').unwrap();
-                if hash == args[2] {
-                    snaps.push(Index::load(name, hash)?);
-                    found1 = true;
-                } else if hash == args[3] {
-                    snaps.push(Index::load(name, hash)?);
-                    found2 = true;
-                }
-            }
-            
-            if !found1 || !found2 {
-                eprintln!("error: snapshot hashes not found");
-                let mark1 = if !found1 { "!" } else { " " };
-                let mark2 = if !found2 { "!" } else { " " };
-                eprintln!("       '{}' {}", mark1, args[2]);
-                eprintln!("       '{}' {}", mark2, args[3]);
-                std::process::exit(1);
-            }
-            
-            let patch = snaps[0].diff(&snaps[1]);
-            print!("{}", patch);
-            eprintln!();
-            eprintln!("ok: diff generated");
-            eprintln!("    time: {:.2}ms", start.elapsed().as_secs_f64() * 1000.0);
-        }
         "help" | "-h" | "--help" => {
             print_usage();
         }
         _ => {
-            eprintln!("error: unknown command '{}'", args[1]);
+            if args.len() >= 3 {
+                let master_path = Path::new(".diffpatch/master");
+                if master_path.exists() {
+                    let hash1 = &args[1];
+                    let hash2 = &args[2];
+                    if is_valid_hash(hash1, master_path)? && is_valid_hash(hash2, master_path)? {
+                        let mut out_file = None;
+                        let mut i = 3;
+                        while i < args.len() {
+                            if args[i] == "-o" && i + 1 < args.len() {
+                                out_file = Some(&args[i+1]);
+                                i += 2;
+                            } else {
+                                eprintln!("error: unexpected argument '{}'", args[i]);
+                                std::process::exit(1);
+                            }
+                        }
+                        run_generate(hash1, hash2, out_file)?;
+                        return Ok(());
+                    }
+                }
+            }
+            eprintln!("error: unknown command or invalid hash pair '{}'", args[1]);
             eprintln!("try 'diffpatch help'");
             std::process::exit(1);
         }
