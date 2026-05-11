@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write, stdout};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -161,7 +161,8 @@ fn unified_diff(old: &[u8], new: &[u8]) -> String {
 }
 
 fn deletion_diff(content: &[u8]) -> String {
-    let lines: Vec<&str> = String::from_utf8_lossy(content).lines().collect();
+    let binding = String::from_utf8_lossy(content);
+    let lines: Vec<&str> = binding.lines().collect();
     let mut out = String::new();
     out.push_str(&format!("@@ -1,{} +0,0 @@\n", lines.len()));
     for line in lines { out.push_str(&format!("-{}\n", line)); }
@@ -169,7 +170,8 @@ fn deletion_diff(content: &[u8]) -> String {
 }
 
 fn addition_diff(content: &[u8]) -> String {
-    let lines: Vec<&str> = String::from_utf8_lossy(content).lines().collect();
+    let binding = String::from_utf8_lossy(content);
+    let lines: Vec<&str> = binding.lines().collect();
     let mut out = String::new();
     out.push_str(&format!("@@ -0,0 +1,{} @@\n", lines.len()));
     for line in lines { out.push_str(&format!("+{}\n", line)); }
@@ -277,8 +279,8 @@ fn main() -> Result<()> {
             
             if !found1 || !found2 {
                 eprintln!("error: snapshot hashes not found");
-                eprintln!("       '{}' {}", if !found1 { "!" else " " }, args[2]);
-                eprintln!("       '{}' {}", if !found2 { "!" else " " }, args[3]);
+                eprintln!("       '{}' {}", if !found1 { "!" } else { " " }, args[2]);
+                eprintln!("       '{}' {}", if !found2 { "!" } else { " " }, args[3]);
                 std::process::exit(1);
             }
             
